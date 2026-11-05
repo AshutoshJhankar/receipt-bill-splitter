@@ -1,0 +1,44 @@
+[
+  {
+    "name": "equal split of one item",
+    "people": ["a", "b", "c"],
+    "items": [{"total_paise": 30000, "shared_by": ["a", "b", "c"]}],
+    "charges_paise": 0,
+    "expected": {"a": 10000, "b": 10000, "c": 10000}
+  },
+  {
+    "name": "indivisible item: leftover paise go to the earliest people",
+    "people": ["a", "b", "c"],
+    "items": [{"total_paise": 10000, "shared_by": ["c", "a", "b"]}],
+    "charges_paise": 0,
+    "expected": {"a": 3334, "b": 3333, "c": 3333}
+  },
+  {
+    "name": "tax and service shared in proportion to what each person ordered",
+    "people": ["asha", "ravi", "meera"],
+    "items": [
+      {"total_paise": 32000, "shared_by": ["asha", "ravi", "meera"]},
+      {"total_paise": 24000, "shared_by": ["asha", "ravi", "meera"]},
+      {"total_paise": 28000, "shared_by": ["asha"]},
+      {"total_paise": 60000, "shared_by": ["ravi", "meera"]},
+      {"total_paise": 27000, "shared_by": ["asha", "ravi", "meera"]},
+      {"total_paise": 24000, "shared_by": ["meera"]}
+    ],
+    "charges_paise": 19500,
+    "expected": {"asha": 61234, "ravi": 63434, "meera": 89832}
+  },
+  {
+    "name": "discount (negative charges) never makes the total drift",
+    "people": ["a", "b"],
+    "items": [{"total_paise": 50000, "shared_by": ["a"]}, {"total_paise": 25001, "shared_by": ["b"]}],
+    "charges_paise": -7501,
+    "expected": {"a": 44999, "b": 22501}
+  },
+  {
+    "name": "person with no items pays nothing, charges split among the rest",
+    "people": ["a", "b", "c"],
+    "items": [{"total_paise": 20000, "shared_by": ["a", "b"]}],
+    "charges_paise": 1001,
+    "expected": {"a": 10501, "b": 10500, "c": 0}
+  }
+]
