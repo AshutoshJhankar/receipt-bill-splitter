@@ -13,26 +13,37 @@ sys.path.insert(0, str(ROOT))
 from app.bills import BillNotFound, BillService, Forbidden  # noqa: E402
 from app.llm import LLMError  # noqa: E402
 from app.receipt import ReceiptError, ReceiptParser, sniff_image  # noqa: E402
-from app.schemas import BillIn, LLMReceipt  # noqa: E402
+from app.rules import applies_to_for, categorize, normalize_category  # noqa: E402
+from app.schemas import BillIn, LLMItem, LLMReceipt  # noqa: E402
 from app.split import compute_shares, rupees_to_paise  # noqa: E402
 from app.store import MemoryStore, SupabaseStore  # noqa: E402
 
 CASES = json.loads((ROOT / "tests/split_cases.json").read_text())
+RULES = json.loads((ROOT / "tests/rules_cases.json").read_text(encoding="utf-8"))
 SAMPLE_JPG = (ROOT.parent / "frontend/public/sample-receipt.jpg").read_bytes()
 
+# What a vision model returns for frontend/public/sample-receipt.jpg (food, beer, GST and liquor VAT).
 SAMPLE_REPLY = {
     "is_receipt": True, "merchant": "THE COPPER LANTERN", "date": "2026-11-05", "currency": "INR",
     "items": [
-        {"name": "Paneer Tikka", "quantity": 1, "unit_price": 320, "total": 320},
-        {"name": "Butter Naan", "quantity": 4, "unit_price": 60, "total": 240},
-        {"name": "Dal Makhani", "quantity": 1, "unit_price": 280, "total": 280},
-        {"name": "Veg Biryani", "quantity": 2, "unit_price": 300, "total": 600},
-        {"name": "Fresh Lime Soda", "quantity": 3, "unit_price": 90, "total": 270},
-        {"name": "Gulab Jamun", "quantity": 2, "unit_price": 120, "total": 240},
+        {"name": "Paneer Tikka", "quantity": 1, "unit_price": 320, "total": 320, "category": "veg"},
+        {"name": "Chicken 65", "quantity": 1, "unit_price": 340, "total": 340, "category": "nonveg"},
+        {"name": "Butter Chicken", "quantity": 1, "unit_price": 420, "total": 420, "category": "nonveg"},
+        {"name": "Dal Makhani", "quantity": 1, "unit_price": 280, "total": 280, "category": "veg"},
+        {"name": "Butter Naan", "quantity": 4, "unit_price": 60, "total": 240, "category": "veg"},
+        {"name": "Jeera Rice", "quantity": 1, "unit_price": 220, "total": 220, "category": "veg"},
+        {"name": "Fresh Lime Soda", "quantity": 2, "unit_price": 90, "total": 180, "category": "soft_drink"},
+        {"name": "Kingfisher Premium", "quantity": 3, "unit_price": 250, "total": 750, "category": "alcohol"},
     ],
-    "subtotal": 1950, "taxes": [{"label": "CGST @ 2.5%", "amount": 48.75}, {"label": "SGST @ 2.5%", "amount": 48.75}],
-    "service_charge": 97.5, "discount": None, "round_off": None, "total": 2145,
+    "subtotal": 2750,
+    "taxes": [{"label": "CGST @ 2.5%", "amount": 50}, {"label": "SGST @ 2.5%", "amount": 50},
+              {"label": "VAT (Liquor) @ 10%", "amount": 75}],
+    "service_charge": 137.5, "discount": None, "round_off": -0.5, "total": 3062,
 }
+
+
+def PROMPT_TEXT(llm):  # noqa: N802
+    return llm.calls[0][0]["content"][0]["text"]
 
 
 class ScriptedLLM:
@@ -51,11 +62,56 @@ class ScriptedLLM:
 
 # ---------- split math ----------
 
+def _charges(case):
+    return case["charges"] if "charges" in case else case["charges_paise"]
+
+
+def _charges_sum(case):
+    return sum(c["amount_paise"] for c in case["charges"]) if "charges" in case else case["charges_paise"]
+
+
 @pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_split_cases(case):
-    got = compute_shares(case["people"], case["items"], case["charges_paise"])
+    got = compute_shares(case["people"], case["items"], _charges(case))
+    bill_total = sum(i["total_paise"] for i in case["items"]) + _charges_sum(case)
     assert {p: v["total_paise"] for p, v in got.items()} == case["expected"]
-    assert sum(v["total_paise"] for v in got.values()) == sum(i["total_paise"] for i in case["items"]) + case["charges_paise"]
+    assert sum(v["total_paise"] for v in got.values()) == bill_total
+    assert sum(v["equal_paise"] for v in got.values()) == bill_total
+    if "expected_equal" in case:
+        assert {p: v["equal_paise"] for p, v in got.items()} == case["expected_equal"]
+    for v in got.values():
+        assert v["items_paise"] + v["charges_paise"] == v["total_paise"]
+        assert 0 <= v["alcohol_paise"] <= v["items_paise"]
+
+
+def test_split_alcohol_portion_and_no_liquor_vat_for_non_drinkers():
+    case = next(c for c in CASES if c["name"].startswith("mixed group"))
+    got = compute_shares(case["people"], case["items"], case["charges"])
+    assert got["ravi"]["alcohol_paise"] == got["kabir"]["alcohol_paise"] == 37500
+    assert got["asha"]["alcohol_paise"] == got["meera"]["alcohol_paise"] == 0
+    # Asha (veg, doesn't drink) pays 1/4 of the veg dishes plus her part of GST and service charge only.
+    assert got["asha"]["items_paise"] == 31000 and got["asha"]["charges_paise"] == 1550 + 1544
+
+
+# ---------- food and drink rules (same cases as the frontend's rules.js) ----------
+
+@pytest.mark.parametrize("case", RULES["categories"], ids=[c["name"] for c in RULES["categories"]])
+def test_categories(case):
+    category, note = categorize(case["name"], case["ai"])
+    assert category == case["expected"]
+    assert (note is not None) == case.get("corrected", False)
+
+
+@pytest.mark.parametrize("case", RULES["applies_to"], ids=[c["label"] for c in RULES["applies_to"]])
+def test_applies_to(case):
+    assert applies_to_for(case["label"]) == case["expected"]
+
+
+def test_category_labels_are_normalized_and_never_fail_validation():
+    assert normalize_category("Non-Veg") == "nonveg" and normalize_category("SOFT_DRINK") == "soft_drink"
+    assert normalize_category("spaceship") == "other" and normalize_category(None) == "other"
+    assert LLMItem(name="X", total=1, category=["veg"]).category is None
+    assert len(LLMItem(name="X", total=1, category="v" * 500).category) == 40
 
 
 def test_split_rejects_unassigned_item():
@@ -72,28 +128,53 @@ def test_rupees_to_paise_avoids_float_drift():
 def test_parses_sample_receipt_and_checks_math():
     llm = ScriptedLLM([SAMPLE_REPLY])
     r = ReceiptParser(llm).parse(SAMPLE_JPG)
-    assert len(r.items) == 6 and r.computed_total_paise == 214500 and r.printed_total_paise == 214500
+    assert len(r.items) == 8 and r.computed_total_paise == 306200 and r.printed_total_paise == 306200
     assert not r.needs_review and all(c.passed for c in r.checks)
+    assert [i.category for i in r.items] == ["veg", "nonveg", "nonveg", "veg", "veg", "veg", "soft_drink", "alcohol"]
+    assert {c.label: c.applies_to for c in r.charges} == {
+        "CGST @ 2.5%": "food", "SGST @ 2.5%": "food", "VAT (Liquor) @ 10%": "alcohol",
+        "Service charge": "all", "Round off": "all"}
+    assert "category" in PROMPT_TEXT(llm)
     content = llm.calls[0][0]["content"]
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
 
 
 def test_misread_line_and_total_are_flagged():
     bad = json.loads(json.dumps(SAMPLE_REPLY))
-    bad["items"][3]["total"] = 500  # model misread 600 as 500
+    bad["items"][3]["total"] = 180  # model misread 280 as 180
     r = ReceiptParser(ScriptedLLM([bad])).parse(SAMPLE_JPG)
     failed = {c.name: c.detail for c in r.checks if not c.passed}
     assert r.needs_review
-    assert "Veg Biryani" in failed["line_math"]
+    assert "Dal Makhani" in failed["line_math"]
     assert "subtotal" in failed and "total" in failed
 
 
 def test_discount_and_round_off_become_signed_charges():
-    reply = {**SAMPLE_REPLY, "discount": 100, "round_off": -0.5, "total": 2044.5}
+    reply = {**SAMPLE_REPLY, "discount": 100, "round_off": -0.5, "total": 2962}
     r = ReceiptParser(ScriptedLLM([reply])).parse(SAMPLE_JPG)
     by_label = {c.label: c.amount_paise for c in r.charges}
     assert by_label["Discount"] == -10000 and by_label["Round off"] == -50
-    assert r.computed_total_paise == 204450 and not r.needs_review
+    assert r.computed_total_paise == 296200 and not r.needs_review
+
+
+def test_wrong_ai_labels_are_corrected_and_reported():
+    reply = json.loads(json.dumps(SAMPLE_REPLY))
+    reply["items"][1]["category"] = "veg"         # Chicken 65 labelled veg
+    reply["items"][7]["category"] = "soft_drink"  # beer labelled as a soft drink
+    reply["items"][5].pop("category")             # Jeera Rice not labelled at all
+    r = ReceiptParser(ScriptedLLM([reply])).parse(SAMPLE_JPG)
+    assert [i.category for i in r.items][1::2] == ["nonveg", "veg", "veg", "alcohol"]
+    note = next(c for c in r.checks if c.name == "categories")
+    assert note.passed and "Chicken 65 marked non-veg" in note.detail and "Kingfisher Premium marked alcohol" in note.detail
+    assert not r.needs_review  # a corrected label is not an error in the bill
+
+
+def test_liquor_tax_without_alcohol_items_is_flagged():
+    reply = json.loads(json.dumps(SAMPLE_REPLY))
+    reply["items"][7].update(name="Item 8", category="other")
+    r = ReceiptParser(ScriptedLLM([reply])).parse(SAMPLE_JPG)
+    failed = {c.name: c.detail for c in r.checks if not c.passed}
+    assert "VAT (Liquor) @ 10%" in failed["tax_targets"] and r.needs_review
 
 
 def test_not_a_receipt_and_bad_files():
@@ -110,7 +191,7 @@ def test_not_a_receipt_and_bad_files():
 def test_invalid_json_gets_one_repair_then_fails():
     bad = {"items": [{"name": "", "total": -5}]}
     r = ReceiptParser(ScriptedLLM([bad, SAMPLE_REPLY])).parse(SAMPLE_JPG)
-    assert len(r.items) == 6
+    assert len(r.items) == 8
     with pytest.raises(LLMError):
         ReceiptParser(ScriptedLLM([bad, bad])).parse(SAMPLE_JPG)
     with pytest.raises(LLMError):
@@ -157,6 +238,26 @@ def test_create_get_and_mark_paid():
     with pytest.raises(BillNotFound):
         svc.get("00000000-0000-0000-0000-000000000000")
     assert "edit_token_hash" not in updated.model_dump()
+
+
+def test_bill_with_tags_categories_and_tax_targets():
+    case = next(c for c in CASES if c["name"].startswith("mixed group"))
+    names = {"asha": ("Asha", "veg", False), "ravi": ("Ravi", "nonveg", True),
+             "meera": ("Meera", "nonveg", False), "kabir": ("Kabir", "nonveg", True)}
+    labels = ["CGST @ 2.5%", "SGST @ 2.5%", "VAT (Liquor) @ 10%", "Service charge", "Round off"]
+    bill = BillIn.model_validate({
+        "people": [{"id": k, "name": n, "diet": d, "drinks": dr} for k, (n, d, dr) in names.items()],
+        "items": [{"id": f"i{k}", "name": f"Item {k}", **i} for k, i in enumerate(case["items"])],
+        "charges": [{"label": label, **c} for label, c in zip(labels, case["charges"])],
+        "payer_id": "ravi", "payer_upi": "ravi@okicici",
+    })
+    created = BillService(MemoryStore()).create(bill).bill
+    assert {s.person_id: s.total_paise for s in created.shares} == case["expected"]
+    assert {s.equal_paise for s in created.shares} == {76550} and created.total_paise == 306200
+    assert created.people[0].diet == "veg" and created.people[1].drinks
+    assert created.charges[2].applies_to == "alcohol" and created.items[7].category == "alcohol"
+    with pytest.raises(ValidationError):
+        BillIn.model_validate({**bill.model_dump(), "people": [{"id": "x", "name": "X", "diet": "pescatarian"}]})
 
 
 @pytest.mark.parametrize("over, msg", [

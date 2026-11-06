@@ -27,8 +27,8 @@ def build_shares(bill: BillIn, paid: dict[str, bool] | None = None) -> list[Shar
     ids = [p.id for p in bill.people]
     computed = compute_shares(
         ids,
-        [{"total_paise": i.total_paise, "shared_by": i.shared_by} for i in bill.items],
-        sum(c.amount_paise for c in bill.charges),
+        [{"total_paise": i.total_paise, "shared_by": i.shared_by, "category": i.category} for i in bill.items],
+        [{"amount_paise": c.amount_paise, "applies_to": c.applies_to} for c in bill.charges],
     )
     return [
         Share(person_id=p.id, name=p.name, is_payer=p.id == bill.payer_id,

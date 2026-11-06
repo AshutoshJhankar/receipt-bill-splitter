@@ -1,5 +1,7 @@
 import { formatPaise, parseRupees } from "../lib/money.js";
-import { newId } from "../lib/nav.js";
+import { APPLIES_TO, chargeAppliesTo, itemCategory } from "../lib/rules.js";
+import { CategoryPicker } from "./Marks.jsx";
+import { blankCharge, blankItem } from "../lib/draft.js";
 
 export function draftTotals(draft) {
   const items = draft.items.map((i) => parseRupees(i.amount));
@@ -11,10 +13,18 @@ export function draftTotals(draft) {
   return { valid, itemsSum, chargesSum, total: itemsSum + chargesSum };
 }
 
+/** Liquor taxes on a bill where nothing is marked as alcohol (checked live, so fixing a label clears it). */
+export function strayLiquorTaxes(draft) {
+  const hasAlcohol = draft.items.some((i) => itemCategory(i) === "alcohol");
+  return hasAlcohol ? [] : draft.charges.filter((c) => chargeAppliesTo(c) === "alcohol").map((c) => c.label);
+}
+
 export default function ReviewStep({ draft, setDraft, onBack, onNext }) {
   const t = draftTotals(draft);
   const diff = draft.printedTotal == null ? null : t.total - draft.printedTotal;
   const matches = diff !== null && Math.abs(diff) <= 100;
+  const corrected = draft.checks.find((c) => c.name === "categories");
+  const stray = strayLiquorTaxes(draft);
 
   const update = (key, id, field, value) =>
     setDraft((d) => ({ ...d, [key]: d[key].map((x) => (x.id === id ? { ...x, [field]: value } : x)) }));
@@ -33,9 +43,11 @@ export default function ReviewStep({ draft, setDraft, onBack, onNext }) {
       </label>
 
       <div className="lines">
-        <div className="line line-head"><span>Item</span><span>Qty</span><span>Amount (₹)</span><span /></div>
+        <div className="line item-line line-head"><span /><span>Item</span><span>Qty</span><span>Amount (₹)</span><span /></div>
         {draft.items.map((i) => (
-          <div className="line" key={i.id}>
+          <div className="line item-line" key={i.id}>
+            <CategoryPicker value={itemCategory(i)} label={`Type of ${i.name || "item"}`}
+                            onChange={(v) => update("items", i.id, "cat", v)} />
             <input aria-label="Item name" value={i.name} placeholder="Item" maxLength={120}
                    onChange={(e) => update("items", i.id, "name", e.target.value)} />
             <input aria-label="Quantity" className="qty" inputMode="decimal" value={i.qty}
@@ -45,25 +57,39 @@ export default function ReviewStep({ draft, setDraft, onBack, onNext }) {
             <button className="x" aria-label={`Remove ${i.name || "item"}`} onClick={() => remove("items", i.id)}>×</button>
           </div>
         ))}
-        <button className="link-btn" onClick={() => setDraft((d) => ({
-          ...d, items: [...d.items, { id: newId("i"), name: "", qty: "1", amount: "", shared_by: [] }],
-        }))}>+ Add item</button>
+        <button className="link-btn" onClick={() => setDraft((d) => ({ ...d, items: [...d.items, blankItem()] }))}>+ Add item</button>
+        <p className="muted small legend">
+          The mark shows the type: <span className="mark mark-veg" aria-hidden /> veg, <span className="mark mark-egg" aria-hidden /> egg,{" "}
+          <span className="mark mark-nonveg" aria-hidden /> non-veg, 🍺 alcohol, 🥤 soft drink. Tap it to change.
+        </p>
+        {corrected && <p className="check ok">✓ {corrected.detail}</p>}
       </div>
 
       <div className="lines">
-        <div className="line line-head"><span>Taxes &amp; charges <small>(discounts negative)</small></span><span /><span>Amount (₹)</span><span /></div>
+        <div className="line charge-line line-head"><span>Taxes &amp; charges <small>(discounts negative)</small></span><span>Charged on</span><span>Amount (₹)</span><span /></div>
         {draft.charges.map((c) => (
-          <div className="line" key={c.id}>
-            <input aria-label="Charge name" className="span2" value={c.label} maxLength={60}
+          <div className="line charge-line" key={c.id}>
+            <input aria-label="Charge name" value={c.label} maxLength={60}
                    onChange={(e) => update("charges", c.id, "label", e.target.value)} />
+            <select aria-label={`${c.label || "Charge"} is charged on`} value={chargeAppliesTo(c)}
+                    onChange={(e) => update("charges", c.id, "applies", e.target.value)}>
+              {APPLIES_TO.map((a) => <option key={a.key} value={a.key}>{a.label}</option>)}
+            </select>
             <input aria-label="Charge amount" className={`amt ${parseRupees(c.amount) === null ? "bad" : ""}`} inputMode="decimal"
                    value={c.amount} onChange={(e) => update("charges", c.id, "amount", e.target.value)} />
             <button className="x" aria-label={`Remove ${c.label}`} onClick={() => remove("charges", c.id)}>×</button>
           </div>
         ))}
-        <button className="link-btn" onClick={() => setDraft((d) => ({
-          ...d, charges: [...d.charges, { id: newId("c"), label: "GST", amount: "" }],
-        }))}>+ Add tax, service charge or discount</button>
+        <button className="link-btn" onClick={() => setDraft((d) => ({ ...d, charges: [...d.charges, blankCharge()] }))}>
+          + Add tax, service charge or discount
+        </button>
+        {draft.charges.length > 0 && (
+          <p className="muted small legend">GST is charged on food and liquor VAT only on alcohol, so each is split over just those items.</p>
+        )}
+        {stray.length > 0 && (
+          <p className="check warn">{stray.join(", ")} is charged on alcohol, but no item is marked as alcohol, so it will be
+            shared over everything. Tap the mark next to the drinks to fix this.</p>
+        )}
       </div>
 
       <div className="totals">

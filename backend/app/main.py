@@ -1,6 +1,8 @@
 """FastAPI app for the Receipt Bill Splitter."""
 from __future__ import annotations
 
+import logging
+import os
 import threading
 import time
 from collections import defaultdict, deque
@@ -16,11 +18,25 @@ from .receipt import ReceiptError, ReceiptParser
 from .schemas import Bill, BillCreated, BillIn, PaidUpdate, ParsedReceipt
 from .store import StoreError, build_store
 
+log = logging.getLogger("uvicorn.error")
+ERROR_LOG = os.getenv("LLM_ERROR_LOG", "llm_errors.log")  # relative to where uvicorn runs (backend/)
+
+
+def record_llm_error(e: Exception) -> None:
+    """Print the provider's real error to the server log and append it to a local file for debugging."""
+    log.warning("LLM call failed: %s", e)
+    try:
+        with open(ERROR_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {e}\n")
+    except OSError:
+        pass
+
 settings = Settings.from_env()
+fallback_models = [x.strip() for x in settings.llm_fallback_models.split(",") if x.strip()]
 bills = BillService(build_store(settings.supabase_url, settings.supabase_service_key, settings.retention_days))
 parser = (
     ReceiptParser(OpenAICompatibleLLM(settings.llm_api_key, settings.llm_base_url, settings.llm_model,
-                                      settings.llm_timeout_s), settings.max_image_mb)
+                                      settings.llm_timeout_s, fallback_models), settings.max_image_mb)
     if settings.llm_api_key else None
 )
 
@@ -57,9 +73,13 @@ def _ip(request: Request) -> str:
     return fwd.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 
 
+
+def parser_or_analyzer_models() -> list[str]:
+    return parser.llm.models if parser is not None else []
+
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "llm_configured": parser is not None, "store": bills.store.name}
+    return {"ok": True, "models": parser_or_analyzer_models(), "llm_configured": parser is not None, "store": bills.store.name}
 
 
 @app.post("/api/receipts/parse", response_model=ParsedReceipt)
@@ -74,6 +94,10 @@ async def parse_receipt(request: Request, file: UploadFile = File(...)) -> Parse
     except ReceiptError as e:
         raise HTTPException(400, str(e)) from e
     except LLMError as e:
+        record_llm_error(e)
+        if "HTTP 429" in str(e):  # every model we tried was busy or rate-limited
+            raise HTTPException(503, "The free AI model is busy or today's request limit is used up. "
+                                     "Please try again in a minute, or add the items by hand.") from e
         raise HTTPException(502, "Couldn't read the bill right now. Try again, or add the items by hand.") from e
 
 

@@ -1,14 +1,18 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { createBill } from "../api.js";
-import { formatPaise, parseRupees } from "../lib/money.js";
+import { formatPaise, parseRupees, vsEqual } from "../lib/money.js";
 import { computeShares } from "../lib/split.js";
 import { isValidUpi } from "../lib/upi.js";
 import { navigate, newId } from "../lib/nav.js";
+import { CATEGORY_LABEL, DIETS, chargeAppliesTo, itemCategory, ruleFor, sharersOf } from "../lib/rules.js";
 import { draftTotals } from "./ReviewStep.jsx";
+import { CategoryPicker, PersonTags } from "./Marks.jsx";
 
 const readUpi = () => {
   try { return localStorage.getItem("last-upi") || ""; } catch { return ""; }
 };
+
+const GROUP_TEXT = { food: "Split over food", alcohol: "Only on alcohol", all: "Over everything" };
 
 export default function SplitStep({ draft, setDraft, people, setPeople, onBack }) {
   const [name, setName] = useState("");
@@ -27,11 +31,12 @@ export default function SplitStep({ draft, setDraft, people, setPeople, onBack }
       setError(`${n} is already added.`);
       return;
     }
-    const person = { id: newId("p"), name: n.slice(0, 40) };
-    // Items currently shared by everyone stay shared by everyone, including the new person.
+    const person = { id: newId("p"), name: n.slice(0, 40), diet: "nonveg", drinks: false };
+    // Hand-edited items shared by everyone stay shared by everyone. Automatic items follow the rules anyway.
     setDraft((d) => ({
       ...d,
-      items: d.items.map((i) => (i.shared_by.length === people.length ? { ...i, shared_by: [...i.shared_by, person.id] } : i)),
+      items: d.items.map((i) => (i.edited && ids.length && ids.every((id) => i.shared_by.includes(id))
+        ? { ...i, shared_by: [...i.shared_by, person.id] } : i)),
     }));
     setPeople([...people, person]);
     if (!payerId) setPayerId(person.id);
@@ -45,22 +50,31 @@ export default function SplitStep({ draft, setDraft, people, setPeople, onBack }
     if (payerId === id) setPayerId(people.find((p) => p.id !== id)?.id || null);
   }
 
-  const toggle = (itemId, pid) => setDraft((d) => ({
-    ...d,
-    items: d.items.map((i) => (i.id !== itemId ? i : {
-      ...i, shared_by: i.shared_by.includes(pid) ? i.shared_by.filter((x) => x !== pid) : [...i.shared_by, pid],
-    })),
-  }));
-  const setAll = (itemId, on) => setDraft((d) => ({
-    ...d, items: d.items.map((i) => (i.id === itemId ? { ...i, shared_by: on ? [...ids] : [] } : i)),
-  }));
+  const updatePerson = (id, patch) => setPeople(people.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  const updateItem = (id, patch) => setDraft((d) => ({ ...d, items: d.items.map((i) => (i.id === id ? { ...i, ...patch } : i)) }));
 
-  const unassigned = draft.items.filter((i) => !i.shared_by.some((p) => ids.includes(p)));
-  const shares = useMemo(() => {
-    if (people.length === 0 || unassigned.length) return null;
-    return computeShares(ids, draft.items.map((i) => ({ total_paise: parseRupees(i.amount), shared_by: i.shared_by })),
-      totals.chargesSum);
-  }, [draft, people]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = draft.items.map((item) => ({ item, category: itemCategory(item), sharers: sharersOf(item, people) }));
+  const toggle = ({ item, sharers }, pid) => updateItem(item.id, {
+    edited: true, shared_by: sharers.includes(pid) ? sharers.filter((x) => x !== pid) : [...sharers, pid],
+  });
+  const setAll = ({ item }, on) => updateItem(item.id, { edited: true, shared_by: on ? [...ids] : [] });
+
+  const unassigned = rows.filter((r) => r.sharers.length === 0);
+  const charges = draft.charges.map((c) => ({ label: c.label.trim(), amount_paise: parseRupees(c.amount), applies_to: chargeAppliesTo(c) }));
+  const shares = people.length >= 2 && !unassigned.length
+    ? computeShares(ids, rows.map((r) => ({ total_paise: parseRupees(r.item.amount), shared_by: r.sharers, category: r.category })), charges)
+    : null;
+  const hasAlcohol = rows.some((r) => r.category === "alcohol");
+  const paiseWhere = (pred) => rows.filter(pred).reduce((a, r) => a + (parseRupees(r.item.amount) || 0), 0);
+  const alcoholPaise = paiseWhere((r) => r.category === "alcohol");
+  const foodPaise = paiseWhere((r) => r.category !== "alcohol");
+  // Same fallback as the split: a tax with none of its items on the bill is spread over everything.
+  const target = (t) => ((t === "alcohol" && !alcoholPaise) || (t === "food" && !foodPaise) ? "all" : t);
+  const chargeGroups = ["food", "alcohol", "all"]
+    .map((t) => [t, charges.filter((c) => target(c.applies_to) === t).map((c) => c.label)])
+    .filter(([, labels]) => labels.length);
+  const nobodyDrinks = people.every((p) => !p.drinks);
+  const anyDiff = shares && people.some((p) => vsEqual(shares[p.id]));
 
   const upiOk = isValidUpi(upi);
   const canSave = people.length >= 2 && !unassigned.length && payerId && upiOk && !saving;
@@ -73,12 +87,12 @@ export default function SplitStep({ draft, setDraft, people, setPeople, onBack }
         merchant: draft.merchant.trim() || null,
         date: draft.date,
         note: draft.merchant.trim().slice(0, 60) || null,
-        people,
-        items: draft.items.map((i) => ({
+        people: people.map(({ id, name: n, diet, drinks }) => ({ id, name: n, diet, drinks })),
+        items: rows.map(({ item: i, category, sharers }) => ({
           id: i.id, name: i.name.trim(), quantity: Number(i.qty) > 0 ? Number(i.qty) : 1,
-          total_paise: parseRupees(i.amount), shared_by: i.shared_by.filter((p) => ids.includes(p)),
+          total_paise: parseRupees(i.amount), category, shared_by: sharers,
         })),
-        charges: draft.charges.map((c) => ({ label: c.label.trim(), amount_paise: parseRupees(c.amount) })),
+        charges,
         payer_id: payerId,
         payer_upi: upi.trim(),
       });
@@ -103,34 +117,63 @@ export default function SplitStep({ draft, setDraft, people, setPeople, onBack }
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Add a name, e.g. Ravi" maxLength={40} aria-label="Name" />
         <button className="btn" type="submit" disabled={!name.trim()}>Add</button>
       </form>
+
       {people.length > 0 && (
         <div className="people">
           {people.map((p) => (
-            <span key={p.id} className="person">
-              {p.name}
-              <button aria-label={`Remove ${p.name}`} onClick={() => removePerson(p.id)}>×</button>
-            </span>
+            <div key={p.id} className="person-row">
+              <span className="person-name">{p.name}</span>
+              <div className="seg" role="radiogroup" aria-label={`What ${p.name} eats`}>
+                {DIETS.map((d) => (
+                  <button key={d.key} type="button" role="radio" aria-checked={p.diet === d.key}
+                          className={p.diet === d.key ? "on" : ""} onClick={() => updatePerson(p.id, { diet: d.key })}>
+                    {d.label}
+                  </button>
+                ))}
+              </div>
+              <button type="button" className={`chip drink ${p.drinks ? "on" : ""}`} aria-pressed={p.drinks}
+                      onClick={() => updatePerson(p.id, { drinks: !p.drinks })}>🍺 Drinks</button>
+              <button type="button" className="x" aria-label={`Remove ${p.name}`} onClick={() => removePerson(p.id)}>×</button>
+            </div>
           ))}
+          <p className="muted small">Tag who's vegetarian and who drinks. Items are assigned for you, and you can tap to change any of them.</p>
         </div>
       )}
 
       {people.length >= 2 && (
         <>
-          <h3 className="sub">Tap who shared each item</h3>
+          <h3 className="sub">Who had what</h3>
           <div className="assign">
-            {draft.items.map((i) => {
-              const everyone = ids.every((p) => i.shared_by.includes(p));
+            {rows.map((row) => {
+              const { item: i, category, sharers } = row;
+              const rule = ruleFor(category, people);
+              const everyone = ids.every((p) => sharers.includes(p));
               return (
-                <div key={i.id} className={`assign-row ${i.shared_by.some((p) => ids.includes(p)) ? "" : "missing"}`}>
+                <div key={i.id} className={`assign-row ${sharers.length ? "" : "missing"}`}>
                   <div className="assign-top">
-                    <span className="assign-name">{i.name}{Number(i.qty) > 1 && <small> ×{i.qty}</small>}</span>
+                    <span className="assign-name">
+                      <CategoryPicker value={category} label={`Type of ${i.name}`} onChange={(v) => updateItem(i.id, { cat: v })} />
+                      <span>{i.name}{Number(i.qty) > 1 && <small> ×{i.qty}</small>}</span>
+                    </span>
                     <span className="assign-amt">{formatPaise(parseRupees(i.amount))}</span>
                   </div>
+                  <div className="assign-rule">
+                    {i.edited ? (
+                      <>
+                        <span>Changed by you</span>
+                        <button className="link-btn" onClick={() => updateItem(i.id, { edited: false, shared_by: [] })}>Undo</button>
+                      </>
+                    ) : (
+                      <span>{CATEGORY_LABEL[category]} · {rule.text}</span>
+                    )}
+                    {!sharers.length && <span className="warn-text">{i.edited ? "Tap who had it." : `${rule.empty} Tap who had it.`}</span>}
+                    {!i.edited && sharers.length > 0 && rule.check && <span className="hint-text">{rule.check}</span>}
+                  </div>
                   <div className="chips">
-                    <button className={`chip ${everyone ? "on" : ""}`} onClick={() => setAll(i.id, !everyone)}>Everyone</button>
+                    <button className={`chip ${everyone ? "on" : ""}`} onClick={() => setAll(row, !everyone)}>Everyone</button>
                     {people.map((p) => (
-                      <button key={p.id} className={`chip ${i.shared_by.includes(p.id) ? "on" : ""}`}
-                              onClick={() => toggle(i.id, p.id)} aria-pressed={i.shared_by.includes(p.id)}>
+                      <button key={p.id} className={`chip ${sharers.includes(p.id) ? "on" : ""}`}
+                              onClick={() => toggle(row, p.id)} aria-pressed={sharers.includes(p.id)}>
                         {p.name}
                       </button>
                     ))}
@@ -139,6 +182,12 @@ export default function SplitStep({ draft, setDraft, people, setPeople, onBack }
               );
             })}
           </div>
+          {hasAlcohol && nobodyDrinks && (
+            <p className="check warn">
+              No one is tagged as drinking, so the drinks aren't assigned yet.{" "}
+              <button className="link-btn" onClick={() => setPeople(people.map((p) => ({ ...p, drinks: true })))}>Everyone drank</button>
+            </p>
+          )}
 
           <h3 className="sub">Who paid?</h3>
           <div className="chips">
@@ -155,15 +204,46 @@ export default function SplitStep({ draft, setDraft, people, setPeople, onBack }
 
           <div className="shares">
             {unassigned.length > 0 && (
-              <p className="check warn">{unassigned.length} item{unassigned.length > 1 ? "s" : ""} not assigned yet: {unassigned.map((i) => i.name).join(", ")}</p>
+              <p className="check warn">{unassigned.length} item{unassigned.length > 1 ? "s" : ""} not assigned yet: {unassigned.map((r) => r.item.name).join(", ")}</p>
             )}
-            {shares && people.map((p) => (
-              <div key={p.id} className="share-row">
-                <span>{p.name}{p.id === payerId && <small className="tag">paid</small>}</span>
-                <span className="muted small">{formatPaise(shares[p.id].items_paise)} + {formatPaise(shares[p.id].charges_paise)} tax/charges</span>
-                <b>{formatPaise(shares[p.id].total_paise)}</b>
-              </div>
-            ))}
+            {shares && (
+              <>
+                <h3 className="sub">Shares</h3>
+                {people.map((p) => {
+                  const s = shares[p.id];
+                  const vs = vsEqual(s);
+                  return (
+                    <div key={p.id} className="share-row">
+                      <div>
+                        <span className="share-name">{p.name}</span> <PersonTags person={p} />
+                        {p.id === payerId && <small className="tag">paid</small>}
+                        <div className="muted small">
+                          {formatPaise(s.items_paise - s.alcohol_paise)} food
+                          {s.alcohol_paise > 0 && <> · {formatPaise(s.alcohol_paise)} alcohol</>} · {formatPaise(s.charges_paise)} tax &amp; charges
+                        </div>
+                      </div>
+                      <div className="share-side">
+                        <b>{formatPaise(s.total_paise)}</b>
+                        {vs && <span className={`vs ${vs.save ? "vs-save" : ""}`}>{vs.text}</span>}
+                      </div>
+                    </div>
+                  );
+                })}
+                {anyDiff && (
+                  <p className="muted small fair-note">
+                    An equal split would be {formatPaise(shares[ids[0]].equal_paise)} each. This split charges people for what they
+                    actually had.
+                  </p>
+                )}
+                {chargeGroups.length > 0 && (
+                  <p className="muted small fair-note">
+                    {chargeGroups.map(([t, labels], k) => (
+                      <span key={t}>{k > 0 && " · "}<b>{GROUP_TEXT[t]}:</b> {labels.join(", ")}</span>
+                    ))}
+                  </p>
+                )}
+              </>
+            )}
           </div>
         </>
       )}

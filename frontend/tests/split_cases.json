@@ -1,44 +1,438 @@
 [
   {
     "name": "equal split of one item",
-    "people": ["a", "b", "c"],
-    "items": [{"total_paise": 30000, "shared_by": ["a", "b", "c"]}],
+    "people": [
+      "a",
+      "b",
+      "c"
+    ],
+    "items": [
+      {
+        "total_paise": 30000,
+        "shared_by": [
+          "a",
+          "b",
+          "c"
+        ]
+      }
+    ],
     "charges_paise": 0,
-    "expected": {"a": 10000, "b": 10000, "c": 10000}
+    "expected": {
+      "a": 10000,
+      "b": 10000,
+      "c": 10000
+    }
   },
   {
     "name": "indivisible item: leftover paise go to the earliest people",
-    "people": ["a", "b", "c"],
-    "items": [{"total_paise": 10000, "shared_by": ["c", "a", "b"]}],
+    "people": [
+      "a",
+      "b",
+      "c"
+    ],
+    "items": [
+      {
+        "total_paise": 10000,
+        "shared_by": [
+          "c",
+          "a",
+          "b"
+        ]
+      }
+    ],
     "charges_paise": 0,
-    "expected": {"a": 3334, "b": 3333, "c": 3333}
+    "expected": {
+      "a": 3334,
+      "b": 3333,
+      "c": 3333
+    }
   },
   {
     "name": "tax and service shared in proportion to what each person ordered",
-    "people": ["asha", "ravi", "meera"],
+    "people": [
+      "asha",
+      "ravi",
+      "meera"
+    ],
     "items": [
-      {"total_paise": 32000, "shared_by": ["asha", "ravi", "meera"]},
-      {"total_paise": 24000, "shared_by": ["asha", "ravi", "meera"]},
-      {"total_paise": 28000, "shared_by": ["asha"]},
-      {"total_paise": 60000, "shared_by": ["ravi", "meera"]},
-      {"total_paise": 27000, "shared_by": ["asha", "ravi", "meera"]},
-      {"total_paise": 24000, "shared_by": ["meera"]}
+      {
+        "total_paise": 32000,
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera"
+        ]
+      },
+      {
+        "total_paise": 24000,
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera"
+        ]
+      },
+      {
+        "total_paise": 28000,
+        "shared_by": [
+          "asha"
+        ]
+      },
+      {
+        "total_paise": 60000,
+        "shared_by": [
+          "ravi",
+          "meera"
+        ]
+      },
+      {
+        "total_paise": 27000,
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera"
+        ]
+      },
+      {
+        "total_paise": 24000,
+        "shared_by": [
+          "meera"
+        ]
+      }
     ],
     "charges_paise": 19500,
-    "expected": {"asha": 61234, "ravi": 63434, "meera": 89832}
+    "expected": {
+      "asha": 61234,
+      "ravi": 63434,
+      "meera": 89832
+    }
   },
   {
     "name": "discount (negative charges) never makes the total drift",
-    "people": ["a", "b"],
-    "items": [{"total_paise": 50000, "shared_by": ["a"]}, {"total_paise": 25001, "shared_by": ["b"]}],
+    "people": [
+      "a",
+      "b"
+    ],
+    "items": [
+      {
+        "total_paise": 50000,
+        "shared_by": [
+          "a"
+        ]
+      },
+      {
+        "total_paise": 25001,
+        "shared_by": [
+          "b"
+        ]
+      }
+    ],
     "charges_paise": -7501,
-    "expected": {"a": 44999, "b": 22501}
+    "expected": {
+      "a": 44999,
+      "b": 22501
+    }
   },
   {
     "name": "person with no items pays nothing, charges split among the rest",
-    "people": ["a", "b", "c"],
-    "items": [{"total_paise": 20000, "shared_by": ["a", "b"]}],
+    "people": [
+      "a",
+      "b",
+      "c"
+    ],
+    "items": [
+      {
+        "total_paise": 20000,
+        "shared_by": [
+          "a",
+          "b"
+        ]
+      }
+    ],
     "charges_paise": 1001,
-    "expected": {"a": 10501, "b": 10500, "c": 0}
+    "expected": {
+      "a": 10501,
+      "b": 10500,
+      "c": 0
+    }
+  },
+  {
+    "name": "mixed group: GST on food, liquor VAT only on drinks, service charge on everything",
+    "people": [
+      "asha",
+      "ravi",
+      "meera",
+      "kabir"
+    ],
+    "items": [
+      {
+        "total_paise": 32000,
+        "category": "veg",
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 34000,
+        "category": "nonveg",
+        "shared_by": [
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 42000,
+        "category": "nonveg",
+        "shared_by": [
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 28000,
+        "category": "veg",
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 24000,
+        "category": "veg",
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 22000,
+        "category": "veg",
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 18000,
+        "category": "soft_drink",
+        "shared_by": [
+          "asha",
+          "ravi",
+          "meera",
+          "kabir"
+        ]
+      },
+      {
+        "total_paise": 75000,
+        "category": "alcohol",
+        "shared_by": [
+          "ravi",
+          "kabir"
+        ]
+      }
+    ],
+    "charges": [
+      {
+        "amount_paise": 5000,
+        "applies_to": "food"
+      },
+      {
+        "amount_paise": 5000,
+        "applies_to": "food"
+      },
+      {
+        "amount_paise": 7500,
+        "applies_to": "alcohol"
+      },
+      {
+        "amount_paise": 13750,
+        "applies_to": "all"
+      },
+      {
+        "amount_paise": -50,
+        "applies_to": "all"
+      }
+    ],
+    "expected": {
+      "asha": 34094,
+      "ravi": 105076,
+      "meera": 61956,
+      "kabir": 105074
+    },
+    "expected_equal": {
+      "asha": 76550,
+      "ravi": 76550,
+      "meera": 76550,
+      "kabir": 76550
+    }
+  },
+  {
+    "name": "someone who only drank pays no food GST, and the non-drinker pays no VAT",
+    "people": [
+      "a",
+      "b"
+    ],
+    "items": [
+      {
+        "total_paise": 10000,
+        "category": "veg",
+        "shared_by": [
+          "a"
+        ]
+      },
+      {
+        "total_paise": 10000,
+        "category": "alcohol",
+        "shared_by": [
+          "b"
+        ]
+      }
+    ],
+    "charges": [
+      {
+        "amount_paise": 500,
+        "applies_to": "food"
+      },
+      {
+        "amount_paise": 1000,
+        "applies_to": "alcohol"
+      },
+      {
+        "amount_paise": 1000,
+        "applies_to": "all"
+      }
+    ],
+    "expected": {
+      "a": 11000,
+      "b": 11500
+    },
+    "expected_equal": {
+      "a": 11250,
+      "b": 11250
+    }
+  },
+  {
+    "name": "VAT with no alcohol on the bill falls back to all items",
+    "people": [
+      "a",
+      "b"
+    ],
+    "items": [
+      {
+        "total_paise": 10000,
+        "category": "veg",
+        "shared_by": [
+          "a"
+        ]
+      },
+      {
+        "total_paise": 30000,
+        "category": "nonveg",
+        "shared_by": [
+          "b"
+        ]
+      }
+    ],
+    "charges": [
+      {
+        "amount_paise": 400,
+        "applies_to": "alcohol"
+      }
+    ],
+    "expected": {
+      "a": 10100,
+      "b": 30300
+    },
+    "expected_equal": {
+      "a": 20200,
+      "b": 20200
+    }
+  },
+  {
+    "name": "food GST on a drinks-only bill falls back to all items",
+    "people": [
+      "a",
+      "b"
+    ],
+    "items": [
+      {
+        "total_paise": 10000,
+        "category": "alcohol",
+        "shared_by": [
+          "a",
+          "b"
+        ]
+      }
+    ],
+    "charges": [
+      {
+        "amount_paise": 500,
+        "applies_to": "food"
+      }
+    ],
+    "expected": {
+      "a": 5250,
+      "b": 5250
+    },
+    "expected_equal": {
+      "a": 5250,
+      "b": 5250
+    }
+  },
+  {
+    "name": "discount on everything plus food GST, with leftover paise",
+    "people": [
+      "a",
+      "b",
+      "c"
+    ],
+    "items": [
+      {
+        "total_paise": 10000,
+        "category": "veg",
+        "shared_by": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      {
+        "total_paise": 5000,
+        "category": "alcohol",
+        "shared_by": [
+          "c"
+        ]
+      }
+    ],
+    "charges": [
+      {
+        "amount_paise": 500,
+        "applies_to": "food"
+      },
+      {
+        "amount_paise": -1000,
+        "applies_to": "all"
+      }
+    ],
+    "expected": {
+      "a": 3279,
+      "b": 3278,
+      "c": 7943
+    },
+    "expected_equal": {
+      "a": 4834,
+      "b": 4833,
+      "c": 4833
+    }
   }
 ]

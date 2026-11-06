@@ -4,7 +4,7 @@ import ReviewStep from "./ReviewStep.jsx";
 import SplitStep from "./SplitStep.jsx";
 import { paiseToInput } from "../lib/money.js";
 import { newId } from "../lib/nav.js";
-
+import { blankCharge, blankItem } from "../lib/draft.js";
 
 /** API receipt (paise) -> editable form state (text inputs). */
 function toDraft(r) {
@@ -14,13 +14,14 @@ function toDraft(r) {
     printedTotal: r.printed_total_paise ?? null,
     checks: r.checks || [],
     items: r.items.map((i) => ({
-      id: i.id || newId("i"), name: i.name, qty: String(i.quantity ?? 1), amount: paiseToInput(i.total_paise), shared_by: [],
+      ...blankItem(), id: i.id || newId("i"), name: i.name, qty: String(i.quantity ?? 1),
+      amount: paiseToInput(i.total_paise), aiCat: i.category || null,
     })),
-    charges: r.charges.map((c) => ({ id: newId("c"), label: c.label, amount: paiseToInput(c.amount_paise) })),
+    charges: r.charges.map((c) => ({ ...blankCharge(c.label), amount: paiseToInput(c.amount_paise) })),
   };
 }
 
-const EMPTY = { merchant: "", date: null, printedTotal: null, checks: [], items: [{ id: newId("i"), name: "", qty: "1", amount: "", shared_by: [] }], charges: [] };
+const EMPTY = { merchant: "", date: null, printedTotal: null, checks: [], items: [], charges: [] };
 const STEPS = [["scan", "Scan"], ["review", "Check"], ["split", "Split"]];
 
 export default function NewBill() {
@@ -41,7 +42,7 @@ export default function NewBill() {
       {step === "scan" && (
         <ScanStep
           onParsed={(r) => { setDraft(toDraft(r)); setStep("review"); }}
-          onManual={() => { setDraft({ ...EMPTY, items: EMPTY.items.map((i) => ({ ...i })) }); setStep("review"); }}
+          onManual={() => { setDraft({ ...EMPTY, items: [blankItem()] }); setStep("review"); }}
         />
       )}
       {step === "review" && draft && (

@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { getBill, setPaid } from "../api.js";
 import { navigate } from "../lib/nav.js";
-import { formatPaise } from "../lib/money.js";
+import { formatPaise, vsEqual } from "../lib/money.js";
 import { upiLink } from "../lib/upi.js";
+import { CategoryMark, PersonTags } from "./Marks.jsx";
+import PayOptions from "./PayOptions.jsx";
 
 const readToken = (id) => {
   try { return localStorage.getItem(`bill-token:${id}`); } catch { return null; }
@@ -13,12 +15,20 @@ function prettyDate(bill) {
 }
 const isMobile = () => /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
 
+const CHARGE_TEXT = {
+  food: "on food, by what each person ate",
+  alcohol: "on alcohol, only among those who drank",
+  all: "on everything, by what each person had",
+};
+
 export default function BillView({ id }) {
   const [bill, setBill] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [openPay, setOpenPay] = useState(null);
   const token = readToken(id);
+  const mobile = isMobile();
 
   useEffect(() => {
     getBill(id).then(setBill).catch((e) => setError(e.message));
@@ -39,11 +49,19 @@ export default function BillView({ id }) {
   const owed = bill.shares.filter((s) => !s.is_payer);
   const pending = owed.filter((s) => !s.paid);
   const title = bill.merchant || "Shared bill";
+  const fair = bill.shares.some((s) => vsEqual(s));
+  const personOf = (pid) => bill.people.find((p) => p.id === pid);
+  const has = (pred) => bill.items.some((i) => pred(i) && i.total_paise > 0);
+  // Same fallback as the split: a tax with none of its items on the bill is spread over everything.
+  const target = (t) => ((t === "alcohol" && !has((i) => i.category === "alcohol"))
+    || (t === "food" && !has((i) => i.category !== "alcohol")) ? "all" : t);
+
   const shareText = [
     `🧾 ${title}: ${formatPaise(bill.total_paise)}, paid by ${bill.payer_name}`,
     "",
     ...owed.map((s) => `${s.name}: ${formatPaise(s.total_paise)}`),
     "",
+    ...(fair ? ["Split by what each person had (veg, non-veg, drinks), not equally.", ""] : []),
     `Tap to pay your share by UPI: ${url}`,
   ].join("\n");
 
@@ -95,34 +113,58 @@ export default function BillView({ id }) {
       <section className="panel">
         <h2>Shares</h2>
         <div className="owed">
-          {bill.shares.map((s) => (
-            <div key={s.person_id} className={`owe ${s.paid && !s.is_payer ? "paid" : ""}`}>
-              <div className="owe-main">
-                <b>{s.name}</b>
-                <span className="muted small">{formatPaise(s.items_paise)} food + {formatPaise(s.charges_paise)} tax/charges</span>
-              </div>
-              <div className="owe-side">
-                <span className="owe-amt">{formatPaise(s.total_paise)}</span>
-                {s.is_payer ? (
-                  <span className="tag">paid the bill</span>
-                ) : s.paid ? (
-                  <span className="tag tag-ok">paid ✓</span>
-                ) : (
-                  <a className="btn btn-sm" href={upiLink({ upiId: bill.payer_upi, payeeName: bill.payer_name, amountPaise: s.total_paise, note: bill.note || title })}>
-                    Pay by UPI
-                  </a>
+          {bill.shares.map((s) => {
+            const vs = vsEqual(s);
+            const canPay = !s.is_payer && !s.paid;
+            const open = canPay && openPay === s.person_id;
+            const link = upiLink({ upiId: bill.payer_upi, payeeName: bill.payer_name, amountPaise: s.total_paise, note: bill.note || title });
+            return (
+              <div key={s.person_id} className={`owe ${s.paid && !s.is_payer ? "paid" : ""}`}>
+                <div className="owe-top">
+                  <div className="owe-main">
+                    <span><b>{s.name}</b> <PersonTags person={personOf(s.person_id)} /></span>
+                    <span className="muted small">
+                      {formatPaise(s.items_paise - s.alcohol_paise)} food
+                      {s.alcohol_paise > 0 && <> · {formatPaise(s.alcohol_paise)} alcohol</>} · {formatPaise(s.charges_paise)} tax &amp; charges
+                    </span>
+                    {vs && <span className={`vs ${vs.save ? "vs-save" : ""}`}>{vs.text}</span>}
+                  </div>
+                  <div className="owe-side">
+                    <span className="owe-amt">{formatPaise(s.total_paise)}</span>
+                    {s.is_payer ? (
+                      <span className="tag">paid the bill</span>
+                    ) : s.paid ? (
+                      <span className="tag tag-ok">paid ✓</span>
+                    ) : mobile ? (
+                      <a className="btn btn-sm" href={link}>Pay by UPI</a>
+                    ) : (
+                      <button className="btn btn-sm" onClick={() => setOpenPay(open ? null : s.person_id)}>{open ? "Hide QR" : "Pay with QR"}</button>
+                    )}
+                    {canPay && mobile && (
+                      <button className="link-btn" onClick={() => setOpenPay(open ? null : s.person_id)}>{open ? "Hide" : "Other ways to pay"}</button>
+                    )}
+                    {token && !s.is_payer && (
+                      <button className="link-btn" disabled={busy === s.person_id} onClick={() => toggle(s)}>
+                        {s.paid ? "Mark unpaid" : "Mark paid"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {open && (
+                  <PayOptions link={link} upiId={bill.payer_upi} payeeName={bill.payer_name} amountPaise={s.total_paise}
+                              fileName={`pay-${bill.payer_name.replace(/\W+/g, "-")}-${(s.total_paise / 100).toFixed(2)}.png`} mobile={mobile} />
                 )}
-                {token && !s.is_payer && (
-                  <button className="link-btn" disabled={busy === s.person_id} onClick={() => toggle(s)}>
-                    {s.paid ? "Mark unpaid" : "Mark paid"}
-                  </button>
-                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
-        {!isMobile() && pending.length > 0 && (
-          <p className="muted small">"Pay by UPI" opens GPay, PhonePe, Paytm or any UPI app. Open this link on your phone to pay.</p>
+        {fair && (
+          <p className="muted small">
+            An equal split would have been {formatPaise(bill.shares[0].equal_paise)} each. This split charges people for what they had.
+          </p>
+        )}
+        {!mobile && pending.length > 0 && (
+          <p className="muted small">On a computer? Tap "Pay with QR" next to your name and scan it with any UPI app.</p>
         )}
       </section>
 
@@ -130,13 +172,17 @@ export default function BillView({ id }) {
         <summary>What everyone had ({bill.items.length} items)</summary>
         {bill.items.map((i) => (
           <div key={i.id} className="detail-row">
-            <span>{i.name}{i.quantity > 1 && <small> ×{i.quantity}</small>}</span>
-            <span className="muted small">{i.shared_by.map((pid) => bill.people.find((p) => p.id === pid)?.name).join(", ")}</span>
+            <span className="detail-name"><CategoryMark category={i.category} /> {i.name}{i.quantity > 1 && <small> ×{i.quantity}</small>}</span>
+            <span className="muted small">{i.shared_by.map((pid) => personOf(pid)?.name).join(", ")}</span>
             <span>{formatPaise(i.total_paise)}</span>
           </div>
         ))}
         {bill.charges.map((c, k) => (
-          <div key={k} className="detail-row charge"><span>{c.label}</span><span className="muted small">shared by what you ordered</span><span>{formatPaise(c.amount_paise)}</span></div>
+          <div key={k} className="detail-row charge">
+            <span>{c.label}</span>
+            <span className="muted small">{CHARGE_TEXT[target(c.applies_to)]}</span>
+            <span>{formatPaise(c.amount_paise)}</span>
+          </div>
         ))}
       </details>
 

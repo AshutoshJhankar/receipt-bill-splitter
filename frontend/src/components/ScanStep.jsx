@@ -49,7 +49,7 @@ export default function ScanStep({ onParsed, onManual }) {
     <>
       <section className="intro">
         <h1>Split the bill in 30 seconds.</h1>
-        <p className="muted">Snap the receipt, tap who had what, and send everyone a UPI link for their exact share, tax and service charge included.</p>
+        <p className="muted">Snap the receipt, tag who's veg and who drinks, and send everyone a UPI link for their exact share, tax and service charge included.</p>
       </section>
       <section className="panel">
         <button className="btn btn-big" onClick={() => input.current?.click()}>📷 Take or upload a photo of the bill</button>
@@ -62,9 +62,9 @@ export default function ScanStep({ onParsed, onManual }) {
         </div>
       </section>
       <ul className="facts">
-        <li><b>AI reads, code calculates.</b> The model only reads the bill. Totals and shares are worked out in exact paise.</li>
-        <li><b>Checks the bill's math.</b> If the items don't add up to the printed total, you'll see it before splitting.</li>
-        <li><b>Fair tax split.</b> GST and service charge are shared in proportion to what each person ordered.</li>
+        <li><b>Veg, non-veg and drinks, sorted.</b> Items are assigned for you, so a vegetarian never pays for the chicken and a non-drinker never pays for the beer.</li>
+        <li><b>Each tax on the right items.</b> GST is split over food, liquor VAT only among those who drank, service charge over everything.</li>
+        <li><b>AI reads, code calculates.</b> The model only reads the bill. Totals and shares are worked out in exact paise, and checked against the printed total.</li>
       </ul>
     </>
   );

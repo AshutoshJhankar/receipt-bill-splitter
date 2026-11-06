@@ -2,12 +2,16 @@
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 UPI_ID = re.compile(r"^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z][a-zA-Z0-9]{1,63}$")
 MAX_PAISE = 10_000_000_00  # ₹1 crore
+
+Category = Literal["veg", "egg", "nonveg", "alcohol", "soft_drink", "other"]
+AppliesTo = Literal["food", "alcohol", "all"]  # which items a tax or charge is spread over
+Diet = Literal["veg", "egg", "nonveg"]
 
 
 # ---------- what the vision model returns (rupees, loosely typed, validated here) ----------
@@ -17,6 +21,12 @@ class LLMItem(BaseModel):
     quantity: float = Field(default=1, gt=0, le=1000)
     unit_price: float | None = Field(default=None, ge=0)
     total: float = Field(ge=0)
+    category: str | None = None  # free text from the model; normalized and double-checked in code
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def _loose_category(cls, v: Any) -> str | None:
+        return str(v)[:40] if isinstance(v, str) else None  # never fail a whole bill over a label
 
 
 class LLMTax(BaseModel):
@@ -45,11 +55,13 @@ class Item(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     quantity: float = Field(default=1, gt=0, le=1000)
     total_paise: int = Field(ge=0, le=MAX_PAISE)
+    category: Category = "other"
 
 
 class Charge(BaseModel):
     label: str = Field(min_length=1, max_length=60)
     amount_paise: int = Field(ge=-MAX_PAISE, le=MAX_PAISE)  # discounts are negative
+    applies_to: AppliesTo = "all"
 
 
 class Check(BaseModel):
@@ -75,6 +87,8 @@ class ParsedReceipt(BaseModel):
 class Person(BaseModel):
     id: str = Field(min_length=1, max_length=40)
     name: str = Field(min_length=1, max_length=40)
+    diet: Diet = "nonveg"  # non-veg = eats anything
+    drinks: bool = False
 
 
 class BillItem(Item):
@@ -121,8 +135,10 @@ class Share(BaseModel):
     person_id: str
     name: str
     items_paise: int
+    alcohol_paise: int = 0  # part of items_paise
     charges_paise: int
     total_paise: int
+    equal_paise: int  # what they'd pay if the bill were split equally
     is_payer: bool
     paid: bool
 

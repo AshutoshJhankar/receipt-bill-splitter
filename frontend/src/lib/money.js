@@ -10,3 +10,12 @@ export function parseRupees(text) {
 }
 
 export const paiseToInput = (p) => (p / 100).toFixed(2);
+
+/** How a fair share compares with an equal split: {save, text}, or null when within ₹1. */
+export function vsEqual(share) {
+  const diff = share.total_paise - share.equal_paise;
+  if (Math.abs(diff) < 100) return null;
+  return diff < 0
+    ? { save: true, text: `${formatPaise(-diff)} less than equal` }
+    : { save: false, text: `${formatPaise(diff)} more than equal` };
+}

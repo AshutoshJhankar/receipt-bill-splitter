@@ -7,6 +7,7 @@ import json
 from pydantic import ValidationError
 
 from .llm import JSONModel, LLMError
+from .rules import applies_to_for, categorize
 from .schemas import Charge, Check, Item, LLMReceipt, ParsedReceipt
 from .split import rupees_to_paise
 
@@ -16,7 +17,7 @@ PROMPT = """Read this restaurant or shop bill and return ONLY a JSON object:
   "merchant": "name printed at the top" | null,
   "date": "YYYY-MM-DD" | null,
   "currency": "INR",
-  "items": [{"name": "Paneer Tikka", "quantity": 1, "unit_price": 320.0, "total": 320.0}],
+  "items": [{"name": "Paneer Tikka", "quantity": 1, "unit_price": 320.0, "total": 320.0, "category": "veg"}],
   "subtotal": number | null,
   "taxes": [{"label": "CGST 2.5%", "amount": 48.75}],
   "service_charge": number | null,
@@ -27,6 +28,12 @@ PROMPT = """Read this restaurant or shop bill and return ONLY a JSON object:
 Rules:
 - Copy numbers exactly as printed. Amounts in rupees. Do not calculate anything yourself.
 - One entry per printed line item; "total" is the line amount printed on the bill.
+- category is one of: "veg" (vegetarian food), "egg" (contains egg but no meat or fish),
+  "nonveg" (meat, chicken, fish or seafood), "alcohol" (beer, wine, spirits, cocktails),
+  "soft_drink" (any non-alcoholic drink: soft drinks, juice, mocktails, water, tea, coffee),
+  "other" (not food or drink, or you are not sure).
+- List each tax line separately with its label as printed, e.g. "CGST @ 2.5%" or "VAT on Liquor @ 10%".
+- subtotal is the overall subtotal before taxes; if the bill only shows separate food and bar subtotals, use null.
 - discount is a positive number (the amount taken off). round_off can be negative.
 - If a value is not printed, use null. If the image is not a bill, return {"is_receipt": false}."""
 
@@ -86,19 +93,25 @@ class ReceiptParser:
                     {"role": "assistant", "content": json.dumps(raw)[:6000]},
                     {"role": "user", "content": f"That JSON failed validation:\n{last}\nReturn corrected JSON only."},
                 ]
-            except LLMError as e:
-                last = str(e)
-                if "HTTP" in last or "request failed" in last:
-                    raise
-                messages = base + [{"role": "user", "content": "Return the JSON object only, no other text."}]
+            except LLMError:
+                raise  # the client already tried every configured model; don't spend more requests
         raise LLMError(f"Could not read the bill: {last[:200]}")
 
     @staticmethod
     def normalize(r: LLMReceipt) -> ParsedReceipt:
         """Convert to paise and verify the bill's arithmetic. The model reads; code does the math."""
-        items = [Item(id=f"i{n}", name=it.name.strip(), quantity=it.quantity, total_paise=rupees_to_paise(it.total))
-                 for n, it in enumerate(r.items, start=1)]
-        charges: list[Charge] = [Charge(label=t.label or "Tax", amount_paise=rupees_to_paise(t.amount)) for t in r.taxes]
+        items: list[Item] = []
+        corrected: list[str] = []
+        for n, it in enumerate(r.items, start=1):
+            name = it.name.strip()
+            category, note = categorize(name, it.category)  # the model labels, keywords double-check
+            if note:
+                corrected.append(f"{name} {note}")
+            items.append(Item(id=f"i{n}", name=name, quantity=it.quantity, total_paise=rupees_to_paise(it.total),
+                              category=category))
+
+        charges: list[Charge] = [Charge(label=t.label or "Tax", amount_paise=rupees_to_paise(t.amount),
+                                        applies_to=applies_to_for(t.label or "Tax")) for t in r.taxes]
         if r.service_charge:
             charges.append(Charge(label="Service charge", amount_paise=rupees_to_paise(r.service_charge)))
         if r.discount:
@@ -134,6 +147,14 @@ class ReceiptParser:
                                 "An item or tax may have been misread."))
         else:
             checks.append(Check(name="total", passed=False, detail="No total found on the bill; please double-check."))
+
+        if corrected:
+            checks.append(Check(name="categories", passed=True, detail="Double-checked: " + "; ".join(corrected)))
+        liquor_taxes = [c.label for c in charges if c.applies_to == "alcohol"]
+        if liquor_taxes and not any(i.category == "alcohol" for i in items):
+            checks.append(Check(name="tax_targets", passed=False,
+                                detail=f"{', '.join(liquor_taxes)} is usually charged on alcohol, but no item is marked "
+                                       "as alcohol. Check the item labels."))
 
         return ParsedReceipt(
             merchant=(r.merchant or "").strip() or None, date=r.date, currency=(r.currency or "INR").upper(),
